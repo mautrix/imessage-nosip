@@ -27,7 +27,7 @@ import (
 
 	"maunium.net/go/mautrix"
 
-	"go.mau.fi/mautrix-imessage/ipc"
+	"go.mau.fi/mautrix-imessage-nosip/ipc"
 )
 
 func sanitize(secret string) string {
@@ -44,11 +44,11 @@ type configRedirect struct {
 
 func output(url string, redirected bool) error {
 	raw, err := json.Marshal(&ipc.OutgoingMessage{
-		Command: "config_url",
-		Data: &configRedirect{
-			URL:        url,
-			Redirected: redirected,
-		},
+		// Command: "config_url",
+		// Data: &configRedirect{
+		// 	URL:        url,
+		// 	Redirected: redirected,
+		// },
 	})
 	if err != nil {
 		return err

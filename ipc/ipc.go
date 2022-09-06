@@ -18,14 +18,16 @@ package ipc
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
 
+	// pio "github.com/gogo/protobuf/io"
+	pb "github.com/open-imcore/barcelona-mautrix-protocol/mautrix-nosip-protobuf"
 	log "maunium.net/go/maulogger/v2"
 )
 
@@ -35,55 +37,46 @@ const (
 )
 
 var (
-	ErrUnknownCommand    = Error{"unknown-command", "Unknown command"}
-	ErrSizeLimitExceeded = Error{Code: "size_limit_exceeded"}
-	ErrTimeoutError      = Error{Code: "timeout"}
-	ErrUnsupportedError  = Error{Code: "unsupported"}
+	ErrUnknownCommand    = pb.Payload_Error{&pb.Error{Code: "unknown-command", Message: "Unknown command"}}
+	ErrSizeLimitExceeded = pb.Payload_Error{&pb.Error{Code: "size_limit_exceeded"}}
+	ErrTimeoutError      = pb.Payload_Error{&pb.Error{Code: "timeout"}}
+	ErrUnsupportedError  = pb.Payload_Error{&pb.Error{Code: "unsupported"}}
 )
 
 type Command string
 
-type Message struct {
-	Command Command         `json:"command"`
-	ID      int             `json:"id"`
-	Data    json.RawMessage `json:"data"`
-}
+type Message pb.Payload
 
-type OutgoingMessage struct {
-	Command Command     `json:"command"`
-	ID      int         `json:"id,omitempty"`
-	Data    interface{} `json:"data,omitempty"`
-}
+type OutgoingMessage pb.Payload
+type IPCError pb.Error
 
-type Error struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-}
-
-func (err Error) Error() string {
+func (err *IPCError) Error() string {
 	return fmt.Sprintf("%s: %s", err.Code, err.Message)
 }
 
-func (err Error) Is(other error) bool {
-	otherErr, ok := other.(Error)
+func (err *IPCError) Is(other error) bool {
+	otherErr, ok := other.(*IPCError)
 	if !ok {
 		return false
 	}
 	return otherErr.Code == err.Code
 }
 
-type HandlerFunc func(message json.RawMessage) interface{}
+type RawMessage pb.PayloadCommand
+type HandlerFunc func(message RawMessage) interface{}
+
+type HandlerID interface{}
 
 type Processor struct {
 	log    log.Logger
 	lock   *sync.Mutex
-	stdout *json.Encoder
-	stdin  *json.Decoder
+	stdout WriteCloser
+	stdin  ReadCloser
 
-	handlers   map[Command]HandlerFunc
-	waiters    map[int]chan<- *Message
+	handlers   map[HandlerID]HandlerFunc
+	waiters    map[int64]chan<- *pb.Payload
 	waiterLock sync.Mutex
-	reqID      int32
+	reqID      int64
 
 	printPayloadContent bool
 }
@@ -92,85 +85,77 @@ func newProcessor(lock *sync.Mutex, output io.Writer, input io.Reader, logger lo
 	return &Processor{
 		lock:                lock,
 		log:                 logger,
-		stdout:              json.NewEncoder(output),
-		stdin:               json.NewDecoder(input),
-		handlers:            make(map[Command]HandlerFunc),
-		waiters:             make(map[int]chan<- *Message),
+		stdout:              NewDelimitedWriter(output),
+		stdin:               NewDelimitedReader(input, 16384*64),
+		handlers:            make(map[HandlerID]HandlerFunc),
+		waiters:             make(map[int64]chan<- *pb.Payload),
 		printPayloadContent: printPayloadContent,
 	}
 }
 
 func NewCustomProcessor(output io.Writer, input io.Reader, logger log.Logger, printPayloadContent bool) *Processor {
-	return newProcessor(&sync.Mutex{}, output, input, logger.Sub("IPC"), printPayloadContent)
+	return newProcessor(&sync.Mutex{}, output, input, logger.Sub(""), printPayloadContent)
 }
 
 func NewStdioProcessor(logger log.Logger, printPayloadContent bool) *Processor {
-	return newProcessor(&logger.(*log.BasicLogger).StdoutLock, os.Stdout, os.Stdin, logger.Sub("IPC"), printPayloadContent)
+	return newProcessor(&logger.(*log.BasicLogger).StdoutLock, os.Stdout, os.Stdin, logger.Sub(""), printPayloadContent)
 }
 
 func (ipc *Processor) Loop() {
 	for {
-		var msg Message
-		err := ipc.stdin.Decode(&msg)
-		if err == io.EOF {
-			ipc.log.Debugln("Standard input closed, ending IPC loop")
-			break
-		} else if err != nil {
-			ipc.log.Errorln("Failed to read input:", err)
-			break
+		payload := pb.Payload{}
+		if err := ipc.stdin.ReadMsg(&payload); err != nil {
+			ipc.log.Warnfln("Dropping corrupted input")
+			continue
 		}
 
-		if msg.Command != "log" {
-			if ipc.printPayloadContent {
-				maxLength := 200
-				snip := "…"
-				if len(msg.Data) < maxLength {
-					snip = ""
-					maxLength = len(msg.Data)
-				}
+		preflect := payload.ProtoReflect()
+		descriptor := preflect.Descriptor()
+		oneofs := descriptor.Oneofs().Get(0)
+		which := preflect.WhichOneof(oneofs)
 
-				ipc.log.Debugfln("Received IPC command: %s/%d - %s%s", msg.Command, msg.ID, msg.Data[:maxLength], snip)
-			} else {
-				ipc.log.Debugfln("Received IPC command: %s/%d", msg.Command, msg.ID)
-			}
+		if payload.GetError() == nil && payload.GetLog() == nil {
+			ipc.log.Debugfln("Received command: %s/%d", which.Name(), payload.ID)
 		}
 
-		if msg.Command == "response" || msg.Command == "error" {
+		if payload.IsResponse || payload.GetError() != nil {
 			ipc.waiterLock.Lock()
-			waiter, ok := ipc.waiters[msg.ID]
+			waiter, ok := ipc.waiters[payload.ID]
 			if !ok {
-				ipc.log.Warnln("Nothing waiting for IPC response to %d", msg.ID)
+				ipc.log.Warnln("Nothing waiting for  response to %d", payload.ID)
 			} else {
-				delete(ipc.waiters, msg.ID)
-				waiter <- &msg
+				delete(ipc.waiters, payload.ID)
+				waiter <- &payload
 			}
 			ipc.waiterLock.Unlock()
 		} else {
-			handler, ok := ipc.handlers[msg.Command]
+			handler, ok := ipc.handlers[reflect.TypeOf(payload.Command)]
 			if !ok {
-				ipc.respond(msg.ID, ErrUnknownCommand)
+				ipc.respond(payload.ID, &ErrUnknownCommand)
 			} else {
-				go ipc.callHandler(&msg, handler)
+				go ipc.callHandler(&payload, handler)
 			}
 		}
 	}
 }
 
-func (ipc *Processor) Send(cmd Command, data interface{}) error {
+func (ipc *Processor) Send(data pb.PayloadCommand) error {
 	ipc.lock.Lock()
-	err := ipc.stdout.Encode(OutgoingMessage{Command: cmd, Data: data})
+	err := ipc.stdout.WriteMsg(&pb.Payload{ID: -1, Command: data})
 	ipc.lock.Unlock()
 	return err
 }
 
-func (ipc *Processor) RequestAsync(cmd Command, data interface{}) (<-chan *Message, error) {
-	respChan := make(chan *Message, 1)
-	reqID := int(atomic.AddInt32(&ipc.reqID, 1))
+func (ipc *Processor) RequestAsync(data pb.PayloadCommand) (<-chan *pb.Payload, error) {
+	respChan := make(chan *pb.Payload, 1)
+	reqID := atomic.AddInt64(&ipc.reqID, 1)
 	ipc.waiterLock.Lock()
 	ipc.waiters[reqID] = respChan
 	ipc.waiterLock.Unlock()
 	ipc.lock.Lock()
-	err := ipc.stdout.Encode(OutgoingMessage{Command: cmd, ID: reqID, Data: data})
+	payload := pb.Payload{ID: reqID, Command: data, IsResponse: false}
+
+	err := ipc.stdout.WriteMsg(&payload)
 	ipc.lock.Unlock()
 	if err != nil {
 		ipc.waiterLock.Lock()
@@ -181,26 +166,18 @@ func (ipc *Processor) RequestAsync(cmd Command, data interface{}) (<-chan *Messa
 	return respChan, err
 }
 
-func (ipc *Processor) Request(ctx context.Context, cmd Command, reqData interface{}, respData interface{}) error {
-	respChan, err := ipc.RequestAsync(cmd, reqData)
+func (ipc *Processor) Request(ctx context.Context, reqData pb.PayloadCommand, respData **pb.Payload) error {
+	respChan, err := ipc.RequestAsync(reqData)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
 	select {
 	case rawData := <-respChan:
-		if rawData.Command == "error" {
-			var respErr Error
-			err = json.Unmarshal(rawData.Data, &respErr)
-			if err != nil {
-				return fmt.Errorf("failed to parse error response: %w", err)
-			}
-			return respErr
+		if respErr := rawData.GetError(); respErr != nil {
+			return fmt.Errorf("%s: %s", respErr.Code, respErr.Message)
 		}
 		if respData != nil {
-			err = json.Unmarshal(rawData.Data, &respData)
-			if err != nil {
-				return fmt.Errorf("failed to parse response: %w", err)
-			}
+			*respData = rawData
 		}
 		return nil
 	case <-ctx.Done():
@@ -208,45 +185,55 @@ func (ipc *Processor) Request(ctx context.Context, cmd Command, reqData interfac
 	}
 }
 
-func (ipc *Processor) callHandler(msg *Message, handler HandlerFunc) {
+func (ipc *Processor) callHandler(msg *pb.Payload, handler HandlerFunc) {
 	defer func() {
 		err := recover()
 		if err != nil {
-			ipc.log.Errorfln("Panic in IPC handler for %s: %v:\n%s", msg.Command, err, string(debug.Stack()))
-			ipc.respond(msg.ID, err)
+			ipc.log.Errorfln("Panic in  handler for %s: %v:\n%s", msg.Command, err, string(debug.Stack()))
+			ipc.respondError(msg.ID, err)
 		}
 	}()
-	resp := handler(msg.Data)
-	ipc.respond(msg.ID, resp)
+	resp := handler(msg.Command)
+	if err, isErr := resp.(error); isErr {
+		ipc.respondError(msg.ID, err)
+	} else if command, isCommand := resp.(pb.PayloadCommand); isCommand {
+		ipc.respond(msg.ID, command)
+	} else if resp != nil {
+		ipc.log.Warnfln("Attempt to respond to payload %d with unsupported data %v", msg.ID, resp)
+	}
 }
 
-func (ipc *Processor) respond(id int, response interface{}) {
+func (ipc *Processor) respondError(id int64, respErr interface{}) {
+	var resp pb.Error
+	if ipcErr, isRealError := respErr.(pb.Error); isRealError {
+		resp = ipcErr
+	} else if err, isError := respErr.(error); isError {
+		resp = pb.Error{
+			Code:    "error",
+			Message: err.Error(),
+		}
+	} else {
+		resp = pb.Error{
+			Code:    "error",
+			Message: fmt.Sprintf("%v", respErr),
+		}
+	}
+	ipc.respond(id, &pb.Payload_Error{&resp})
+}
+
+func (ipc *Processor) respond(id int64, response pb.PayloadCommand) {
 	if id == 0 && response == nil {
 		// No point in replying
 		return
 	}
-	resp := OutgoingMessage{Command: CommandResponse, ID: id, Data: response}
-	respErr, isError := response.(error)
-	if isError {
-		_, isRealError := respErr.(Error)
-		if isRealError {
-			resp.Data = respErr
-		} else {
-			resp.Data = Error{
-				Code:    "error",
-				Message: respErr.Error(),
-			}
-		}
-		resp.Command = CommandError
-	}
 	ipc.lock.Lock()
-	err := ipc.stdout.Encode(resp)
+	err := ipc.stdout.WriteMsg(&pb.Payload{ID: id, Command: response, IsResponse: true})
 	ipc.lock.Unlock()
 	if err != nil {
-		ipc.log.Errorln("Failed to encode IPC response: %v", err)
+		ipc.log.Errorln("Failed to encode  response: %v", err)
 	}
 }
 
-func (ipc *Processor) SetHandler(command Command, handler HandlerFunc) {
-	ipc.handlers[command] = handler
+func (ipc *Processor) SetHandler(command interface{}, handler HandlerFunc) {
+	ipc.handlers[reflect.TypeOf(command)] = handler
 }

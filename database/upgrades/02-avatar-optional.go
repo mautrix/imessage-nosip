@@ -1,6 +1,8 @@
 package upgrades
 
 import (
+	"database/sql"
+
 	"maunium.net/go/mautrix/util/dbutil"
 )
 
@@ -40,7 +42,7 @@ const createTapbackTable = `CREATE TABLE tapback (
 )`
 
 func init() {
-	Table.Register(-1, 2, "Make avatar fields optional", func(tx dbutil.Transaction, db *dbutil.Database) error {
+	Table.Register(-1, 2, "Make avatar fields optional", func(tx *sql.Tx, db *dbutil.Database) error {
 		_, err := tx.Exec("PRAGMA defer_foreign_keys = ON")
 		if err != nil {
 			return err

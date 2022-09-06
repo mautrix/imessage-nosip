@@ -33,8 +33,8 @@ import (
 	"maunium.net/go/mautrix/bridge"
 	"maunium.net/go/mautrix/id"
 
-	"go.mau.fi/mautrix-imessage/database"
-	"go.mau.fi/mautrix-imessage/imessage"
+	"go.mau.fi/mautrix-imessage-nosip/database"
+	pb "github.com/open-imcore/barcelona-mautrix-protocol/mautrix-nosip-protobuf"
 )
 
 var userIDRegex *regexp.Regexp
@@ -78,7 +78,7 @@ func (br *IMBridge) GetPuppetByMXID(mxid id.UserID) *Puppet {
 }
 
 func (br *IMBridge) GetPuppetByGUID(guid string) *Puppet {
-	return br.GetPuppetByLocalID(imessage.ParseIdentifier(guid).LocalID)
+	return br.GetPuppetByLocalID(pb.ParseIdentifier(guid).LocalID)
 }
 
 func (br *IMBridge) GetPuppetByLocalID(id string) *Puppet {
@@ -174,11 +174,15 @@ func (puppet *Puppet) DefaultIntent() *appservice.IntentAPI {
 	return puppet.Intent
 }
 
+func (puppet *Puppet) GetIntent() *appservice.IntentAPI {
+	return puppet.DefaultIntent()
+}
+
 func (puppet *Puppet) GetMXID() id.UserID {
 	return puppet.MXID
 }
 
-func (puppet *Puppet) UpdateName(contact *imessage.Contact) bool {
+func (puppet *Puppet) UpdateName(contact *pb.Contact) bool {
 	if puppet.NameOverridden {
 		// Never replace custom names with contact list names
 		return false
@@ -212,7 +216,7 @@ func (puppet *Puppet) UpdateNameDirect(name string) bool {
 	return false
 }
 
-func (puppet *Puppet) UpdateAvatar(contact *imessage.Contact) bool {
+func (puppet *Puppet) UpdateAvatar(contact *pb.Contact) bool {
 	if contact == nil {
 		return false
 	}
@@ -260,10 +264,10 @@ func applyMeta(portal *Portal, meta func(portal *Portal)) {
 }
 
 func (puppet *Puppet) updatePortalMeta(meta func(portal *Portal)) {
-	imID := imessage.Identifier{Service: "iMessage", LocalID: puppet.ID}.String()
+	imID := pb.NewGUID("iMessage", puppet.ID, false).ToString()
 	applyMeta(puppet.bridge.GetPortalByGUID(imID), meta)
 	if strings.HasPrefix(puppet.ID, "+") {
-		smsID := imessage.Identifier{Service: "SMS", LocalID: puppet.ID}.String()
+		smsID := pb.NewGUID("SMS", puppet.ID, false).ToString()
 		applyMeta(puppet.bridge.GetPortalByGUID(smsID), meta)
 	}
 }
@@ -278,7 +282,7 @@ func (puppet *Puppet) updatePortalAvatar() {
 		}
 		portal.AvatarURL = puppet.AvatarURL
 		portal.AvatarHash = puppet.AvatarHash
-		portal.Update()
+		portal.Update(nil)
 		portal.UpdateBridgeInfo()
 	})
 }
@@ -292,7 +296,7 @@ func (puppet *Puppet) updatePortalName() {
 			}
 		}
 		portal.Name = puppet.Displayname
-		portal.Update()
+		portal.Update(nil)
 		portal.UpdateBridgeInfo()
 	})
 }
@@ -354,15 +358,16 @@ func (puppet *Puppet) SyncWithProfileOverride(override ProfileOverride) {
 	}
 }
 
-func (puppet *Puppet) UpdateCorrelationID(contact *imessage.Contact) bool {
-	if contact == nil || len(contact.CorrelationID) == 0 || contact.CorrelationID == puppet.CorrelationID {
+func (puppet *Puppet) UpdateCorrelationID(contact *pb.Contact) bool {
+	correlationID := contact.GetCorrelationID()
+	if contact == nil || len(correlationID) == 0 || correlationID == puppet.CorrelationID {
 		return false
 	}
-	puppet.CorrelationID = contact.CorrelationID
+	puppet.CorrelationID = correlationID
 	return true
 }
 
-func (puppet *Puppet) SyncWithContact(contact *imessage.Contact) {
+func (puppet *Puppet) SyncWithContact(contact *pb.Contact) {
 	update := false
 	update = puppet.UpdateName(contact) || update
 	update = puppet.UpdateAvatar(contact) || update

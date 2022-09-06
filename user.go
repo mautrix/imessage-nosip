@@ -33,7 +33,7 @@ import (
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 
-	"go.mau.fi/mautrix-imessage/database"
+	"go.mau.fi/mautrix-imessage-nosip/database"
 )
 
 type User struct {

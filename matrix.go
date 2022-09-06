@@ -28,7 +28,7 @@ import (
 	"maunium.net/go/mautrix/appservice"
 	"maunium.net/go/mautrix/id"
 
-	"go.mau.fi/mautrix-imessage/imessage"
+	pb "github.com/open-imcore/barcelona-mautrix-protocol/mautrix-nosip-protobuf"
 )
 
 const DefaultSyncProxyBackoff = 1 * time.Second
@@ -62,12 +62,12 @@ func NewWebsocketCommandHandler(br *IMBridge) *WebsocketCommandHandler {
 }
 
 func (mx *WebsocketCommandHandler) handleWSPing(cmd appservice.WebsocketCommand) (bool, interface{}) {
-	var status imessage.BridgeStatus
+	var status *pb.BridgeStatus
 
 	if mx.bridge.latestState != nil {
-		status = *mx.bridge.latestState
+		status = mx.bridge.latestState
 	} else {
-		status = imessage.BridgeStatus{
+		status = &pb.BridgeStatus{
 			StateEvent: BridgeStatusConnected,
 			Timestamp:  time.Now().Unix(),
 			TTL:        600,
@@ -186,9 +186,9 @@ func (mx *WebsocketCommandHandler) StartChat(req StartDMRequest) (*StartDMRespon
 		// this is done if and only if ActuallyStart is true, so that the user can see that they would only have SMS behavior
 		// this ensures that an iMessage room is created, instead of a bricked SMS room + an iMessage room
 		if mx.bridge.IM.Capabilities().MergedChats {
-			parsed := imessage.ParseIdentifier(resp.GUID)
+			parsed := pb.ParseIdentifier(resp.GUID)
 			parsed.Service = "iMessage"
-			resp.GUID = parsed.String()
+			resp.GUID = parsed.ToString()
 		}
 		if err := mx.bridge.IM.PrepareDM(resp.GUID); err != nil {
 			return nil, err

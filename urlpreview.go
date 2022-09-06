@@ -30,7 +30,7 @@ import (
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 
-	"go.mau.fi/mautrix-imessage/imessage"
+	pb "github.com/open-imcore/barcelona-mautrix-protocol/mautrix-nosip-protobuf"
 )
 
 type BeeperLinkPreview struct {
@@ -49,7 +49,7 @@ type BeeperLinkPreview struct {
 	ImageType   string `json:"og:image:type,omitempty"`
 }
 
-func (portal *Portal) convertURLPreviewToIMessage(evt *event.Event) (output *imessage.RichLink) {
+func (portal *Portal) convertURLPreviewToIMessage(evt *event.Event) (output *pb.RichLink) {
 	rawPreview := gjson.GetBytes(evt.Content.VeryRaw, `com\.beeper\.linkpreviews`)
 	if !rawPreview.Exists() || !rawPreview.IsArray() {
 		return
@@ -64,28 +64,28 @@ func (portal *Portal) convertURLPreviewToIMessage(evt *event.Event) (output *ime
 		return
 	}
 
-	output = &imessage.RichLink{
-		OriginalURL: preview.MatchedURL,
-		URL:         preview.CanonicalURL,
-		Title:       preview.Title,
-		Summary:     preview.Description,
-		ItemType:    preview.Type,
+	output = &pb.RichLink{
+		OriginalURL: &preview.MatchedURL,
+		URL:         &preview.CanonicalURL,
+		Title:       &preview.Title,
+		Summary:     &preview.Description,
+		ItemType:    &preview.Type,
 	}
 
-	if output.URL == "" {
-		output.URL = preview.MatchedURL
-	} else if output.OriginalURL == "" {
-		output.OriginalURL = preview.CanonicalURL
+	if output.GetURL() == "" {
+		output.URL = &preview.MatchedURL
+	} else if output.GetOriginalURL() == "" {
+		output.OriginalURL = &preview.CanonicalURL
 	}
 
 	if preview.ImageURL != "" || preview.ImageEncryption != nil {
-		output.Image = &imessage.RichLinkAsset{
-			MimeType: preview.ImageType,
-			Size: &imessage.RichLinkAssetSize{
-				Width:  float64(preview.ImageWidth),
-				Height: float64(preview.ImageHeight),
+		output.Image = &pb.RichLinkAsset{
+			MimeType: &preview.ImageType,
+			Size: &pb.RichLinkAssetSize{
+				Width:  int64(preview.ImageWidth),
+				Height: int64(preview.ImageHeight),
 			},
-			Source: &imessage.RichLinkAssetSource{},
+			Source: &pb.RichLinkAssetSource{},
 		}
 
 		var contentUri id.ContentURI
@@ -110,24 +110,25 @@ func (portal *Portal) convertURLPreviewToIMessage(evt *event.Event) (output *ime
 				return
 			}
 		}
-		output.Image.Source.Data = imgBytes
+		source := pb.RichLinkAssetSource{Source: &pb.RichLinkAssetSource_Data{imgBytes}}
+		output.Image.Source = &source
 	}
 	return
 }
 
-func (portal *Portal) convertRichLinkToBeeper(richLink *imessage.RichLink) (output *BeeperLinkPreview) {
+func (portal *Portal) convertRichLinkToBeeper(richLink *pb.RichLink) (output *BeeperLinkPreview) {
 	if richLink == nil {
 		return
 	}
-	description := richLink.SelectedText
+	description := richLink.GetSelectedText()
 	if description == "" {
-		description = richLink.Summary
+		description = richLink.GetSummary()
 	}
 
 	output = &BeeperLinkPreview{
-		MatchedURL:   richLink.OriginalURL,
-		CanonicalURL: richLink.URL,
-		Title:        richLink.Title,
+		MatchedURL:   richLink.GetOriginalURL(),
+		CanonicalURL: richLink.GetURL(),
+		Title:        richLink.GetTitle(),
 		Description:  description,
 	}
 
@@ -136,12 +137,12 @@ func (portal *Portal) convertRichLinkToBeeper(richLink *imessage.RichLink) (outp
 			output.ImageWidth = int(richLink.Image.Size.Width)
 			output.ImageHeight = int(richLink.Image.Size.Height)
 		}
-		output.ImageType = richLink.ItemType
+		output.ImageType = richLink.GetItemType()
 
 		if richLink.Image.Source != nil {
-			thumbnailData := richLink.Image.Source.Data
+			thumbnailData := richLink.Image.Source.GetData()
 			if thumbnailData == nil {
-				if url := richLink.Image.Source.URL; url != "" {
+				if url := richLink.Image.Source.GetURL(); url != "" {
 					ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 					defer cancel()
 					req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)

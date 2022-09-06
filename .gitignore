@@ -9,4 +9,4 @@
 *.db*
 *.log
 
-/mautrix-imessage
+/mautrix-imessage-nosip

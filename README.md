@@ -1,22 +1,10 @@
-# mautrix-imessage
-A Matrix-iMessage puppeting bridge. The bridge can run on a Mac to bridge
-iMessage or an Android phone to bridge SMS. All features are available when
-using a Mac with SIP disabled, while a normal Mac can be used for basic
-bridging. A [websocket proxy](https://github.com/mautrix/wsproxy)
-is required to receive appservice events from the homeserver.
+# mautrix-imessage-nosip
+A Matrix-iMessage puppeting bridge for Macs with SIP disabled.
 
-### Documentation
-All setup and usage instructions are located on
-[docs.mau.fi](https://docs.mau.fi/bridges/go/imessage/index.html):
-
-* Bridge setup:
-  [macOS](https://docs.mau.fi/bridges/go/imessage/mac/setup.html),
-  [macOS (without SIP)](https://docs.mau.fi/bridges/go/imessage/mac-nosip/setup.html),
-  [Android SMS](https://docs.mau.fi/bridges/go/imessage/android/setup.html)
-
-### Features & Roadmap
-[ROADMAP.md](https://github.com/mautrix/imessage/blob/master/ROADMAP.md)
-contains a general overview of what is supported by the bridge.
+This will supersede [mautrix-imessage](https://github.com/mautrix/imessage) for
+the SIP-disabled use case and will feature more integration with Barcelona.
+No changes have been made yet, so use mautrix-imessage for now.
+Android SMS and SIP-enabled iMessage will remain in the original project.
 
 ## Discussion
 Matrix room: [#imessage:maunium.net](https://matrix.to/#/#imessage:maunium.net)

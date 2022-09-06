@@ -30,8 +30,6 @@ import (
 	flag "maunium.net/go/mauflag"
 	log "maunium.net/go/maulogger/v2"
 
-	"maunium.net/go/mautrix/event"
-
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/appservice"
 	"maunium.net/go/mautrix/bridge"
@@ -39,12 +37,11 @@ import (
 	"maunium.net/go/mautrix/id"
 	"maunium.net/go/mautrix/util/configupgrade"
 
-	"go.mau.fi/mautrix-imessage/config"
-	"go.mau.fi/mautrix-imessage/database"
-	"go.mau.fi/mautrix-imessage/imessage"
-	_ "go.mau.fi/mautrix-imessage/imessage/ios"
-	_ "go.mau.fi/mautrix-imessage/imessage/mac-nosip"
-	"go.mau.fi/mautrix-imessage/ipc"
+	"go.mau.fi/mautrix-imessage-nosip/config"
+	"go.mau.fi/mautrix-imessage-nosip/database"
+	"go.mau.fi/mautrix-imessage-nosip/imessage"
+	"go.mau.fi/mautrix-imessage-nosip/ipc"
+	pb "github.com/open-imcore/barcelona-mautrix-protocol/mautrix-nosip-protobuf"
 )
 
 var (
@@ -59,7 +56,6 @@ var ExampleConfig string
 
 var configURL = flag.MakeFull("u", "url", "The URL to download the config file from.", "").String()
 var configOutputRedirect = flag.MakeFull("o", "output-redirect", "Whether or not to output the URL of the first redirect when downloading the config file.", "false").Bool()
-var checkPermissions = flag.MakeFull("p", "check-permissions", "Check for full disk access permissions and quit.", "false").Bool()
 
 type IMBridge struct {
 	bridge.Bridge
@@ -81,8 +77,7 @@ type IMBridge struct {
 	stopping      bool
 	stop          chan struct{}
 	stopPinger    chan struct{}
-	latestState   *imessage.BridgeStatus
-	pushKey       *imessage.PushKeyRequest
+	latestState   *pb.BridgeStatus
 
 	shortCircuitReconnectBackoff chan struct{}
 	websocketStarted             chan struct{}
@@ -186,13 +181,9 @@ func (br *IMBridge) PreInit() {
 
 func (br *IMBridge) Init() {
 	br.CommandProcessor = commands.NewProcessor(&br.Bridge)
-	br.DB = database.New(br.Bridge.DB, br.Log.Sub("Database"))
+	br.DB = database.New(br.Bridge.DB)
 
 	br.IPC = ipc.NewStdioProcessor(br.Log, br.Config.IMessage.LogIPCPayloads)
-	br.IPC.SetHandler("reset-encryption", br.ipcResetEncryption)
-	br.IPC.SetHandler("ping", br.ipcPing)
-	br.IPC.SetHandler("ping-server", br.ipcPingServer)
-	br.IPC.SetHandler("stop", br.ipcStop)
 
 	br.Log.Debugln("Initializing iMessage connector")
 	var err error
@@ -200,12 +191,6 @@ func (br *IMBridge) Init() {
 	if err != nil {
 		br.Log.Fatalln("Failed to initialize iMessage connector:", err)
 		os.Exit(14)
-	}
-
-	if br.Config.IMessage.Platform == "android" {
-		br.EventProcessor.PrependHandler(event.EventEncrypted, func(evt *event.Event) {
-			go br.IM.NotifyUpcomingMessage(evt.ID)
-		})
 	}
 
 	br.IMHandler = NewiMessageHandler(br)
@@ -306,7 +291,7 @@ type StartSyncRequest struct {
 
 const BridgeStatusConnected = "CONNECTED"
 
-func (br *IMBridge) SendBridgeStatus(state imessage.BridgeStatus) {
+func (br *IMBridge) SendBridgeStatus(state *pb.BridgeStatus) {
 	br.Log.Debugln("Sending bridge status to server")
 	if state.Timestamp == 0 {
 		state.Timestamp = time.Now().Unix()
@@ -317,11 +302,11 @@ func (br *IMBridge) SendBridgeStatus(state imessage.BridgeStatus) {
 	if len(state.Source) == 0 {
 		state.Source = "bridge"
 	}
-	if len(state.UserID) == 0 {
-		state.UserID = br.user.MXID
+	if len(state.GetUserID()) == 0 {
+		state.UserID = (*string)(&br.user.MXID)
 	}
 	if br.IM.Capabilities().BridgeState {
-		br.latestState = &state
+		br.latestState = state
 	}
 	err := br.AS.SendWebsocket(&appservice.WebsocketRequest{
 		Command: "bridge_status",
@@ -330,32 +315,6 @@ func (br *IMBridge) SendBridgeStatus(state imessage.BridgeStatus) {
 	if err != nil {
 		br.Log.Warnln("Error sending pong status:", err)
 	}
-}
-
-func (br *IMBridge) sendPushKey() {
-	if br.pushKey == nil {
-		return
-	}
-	err := br.AS.RequestWebsocket(context.Background(), &appservice.WebsocketRequest{
-		Command: "push_key",
-		Data:    br.pushKey,
-	}, nil)
-	if err != nil {
-		// Don't care about websocket not connected errors, we'll retry automatically when reconnecting
-		if !errors.Is(err, appservice.ErrWebsocketNotConnected) {
-			br.Log.Warnln("Error sending push key to asmux:", err)
-		}
-	} else {
-		br.Log.Infoln("Successfully sent push key to asmux")
-	}
-}
-
-func (br *IMBridge) SetPushKey(req *imessage.PushKeyRequest) {
-	if req.PushKeyTS == 0 {
-		req.PushKeyTS = time.Now().Unix()
-	}
-	br.pushKey = req
-	go br.sendPushKey()
 }
 
 func (br *IMBridge) RequestStartSync() {
@@ -387,11 +346,10 @@ func (br *IMBridge) startWebsocket(wg *sync.WaitGroup) {
 	var wgOnce sync.Once
 	onConnect := func() {
 		if br.latestState != nil {
-			go br.SendBridgeStatus(*br.latestState)
+			go br.SendBridgeStatus(br.latestState)
 		} else if !br.IM.Capabilities().BridgeState {
-			go br.SendBridgeStatus(imessage.BridgeStatus{StateEvent: BridgeStatusConnected})
+			go br.SendBridgeStatus(&pb.BridgeStatus{StateEvent: BridgeStatusConnected})
 		}
-		go br.sendPushKey()
 		if !br.suppressSyncStart {
 			br.RequestStartSync()
 		}
@@ -498,7 +456,7 @@ func (br *IMBridge) Start() {
 	br.Log.Debugln("Starting iMessage handler")
 	go br.IMHandler.Start()
 	startupGroup.Wait()
-	br.Log.Debugln("Starting IPC loop")
+	br.Log.Debugln("Starting  loop")
 	go br.IPC.Loop()
 
 	go br.StartupSync()
@@ -661,10 +619,6 @@ func (br *IMBridge) internalStop() {
 }
 
 func (br *IMBridge) HandleFlags() bool {
-	if *checkPermissions {
-		checkMacPermissions()
-		return true
-	}
 	if len(*configURL) > 0 {
 		err := config.Download(*configURL, br.ConfigPath, *configOutputRedirect)
 		if err != nil {
@@ -698,7 +652,7 @@ func main() {
 		AdditionalShortFlags: "po",
 		AdditionalLongFlags:  " [-u <url>]",
 
-		CryptoPickleKey: "go.mau.fi/mautrix-imessage",
+		CryptoPickleKey: "go.mau.fi/mautrix-imessage-nosip",
 
 		ConfigUpgrader: &configupgrade.StructUpgrader{
 			SimpleUpgrader: configupgrade.SimpleUpgrader(config.DoUpgrade),

@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	pb "github.com/open-imcore/barcelona-mautrix-protocol/mautrix-nosip-protobuf"
 )
 
 const (
@@ -72,24 +74,24 @@ func (tapback *Tapback) Parse() (*Tapback, error) {
 	return tapback, nil
 }
 
-type TapbackType int
+type TapbackType pb.TapbackType
 
-func TapbackFromEmoji(emoji string) TapbackType {
+func TapbackFromEmoji(emoji string) pb.TapbackType {
 	switch []rune(emoji)[0] {
 	case '\u2665', '\u2764', '\U0001f499', '\U0001f49a', '\U0001f90e', '\U0001f5a4', '\U0001f90d', '\U0001f9e1',
 		'\U0001f49b', '\U0001f49c', '\U0001f496', '\u2763', '\U0001f495', '\U0001f49f':
 		// '♥', '❤', '💙', '💚', '🤎', '🖤', '🤍', '🧡', '💛', '💜', '💖', '❣', '💕', '💟'
-		return TapbackLove
+		return pb.TapbackType_TapbackLove
 	case '\U0001f44d': // '👍'
-		return TapbackLike
+		return pb.TapbackType_TapbackLike
 	case '\U0001f44e': // '👎'
-		return TapbackDislike
+		return pb.TapbackType_TapbackDislike
 	case '\U0001f602', '\U0001f639', '\U0001f606', '\U0001f923': // '😂', '😹', '😆', '🤣'
-		return TapbackLaugh
+		return pb.TapbackType_TapbackLaugh
 	case '\u2755', '\u2757', '\u203c': // '❕', '❗', '‼',
-		return TapbackEmphasis
+		return pb.TapbackType_TapbackEmphasis
 	case '\u2753', '\u2754': // '❓', '❔'
-		return TapbackQuestion
+		return pb.TapbackType_TapbackQuestion
 	default:
 		return 0
 	}
@@ -100,20 +102,32 @@ func (amt TapbackType) String() string {
 }
 
 func (amt TapbackType) Emoji() string {
-	switch amt {
+	switch (pb.TapbackType)(amt) {
 	case 0:
 		return ""
-	case TapbackLove:
+	case pb.TapbackType_TapbackLove:
+		fallthrough
+	case pb.TapbackType_TapbackRemoveLove:
 		return "\u2764\ufe0f" // "❤️"
-	case TapbackLike:
+	case pb.TapbackType_TapbackLike:
+		fallthrough
+	case pb.TapbackType_TapbackRemoveLike:
 		return "\U0001f44d\ufe0f" // "👍️"
-	case TapbackDislike:
+	case pb.TapbackType_TapbackDislike:
+		fallthrough
+	case pb.TapbackType_TapbackRemoveDislike:
 		return "\U0001f44e\ufe0f" // "👎️"
-	case TapbackLaugh:
+	case pb.TapbackType_TapbackLaugh:
+		fallthrough
+	case pb.TapbackType_TapbackRemoveLaugh:
 		return "\U0001f602" // "😂"
-	case TapbackEmphasis:
+	case pb.TapbackType_TapbackEmphasis:
+		fallthrough
+	case pb.TapbackType_TapbackRemoveEmphasis:
 		return "\u203c\ufe0f" // "‼️"
-	case TapbackQuestion:
+	case pb.TapbackType_TapbackQuestion:
+		fallthrough
+	case pb.TapbackType_TapbackRemoveQuestion:
 		return "\u2753\ufe0f" // "❓️"
 	default:
 		return "\ufffd" // "�"

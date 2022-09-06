@@ -1,6 +1,7 @@
 package upgrades
 
 import (
+	"database/sql"
 	"fmt"
 
 	"maunium.net/go/mautrix/util/dbutil"
@@ -28,7 +29,7 @@ const createTapbackTable3 = `CREATE TABLE tapback (
 )`
 
 func init() {
-	Table.Register(-1, 5, "Add ON UPDATE CASCADE to message foreign keys", func(tx dbutil.Transaction, db *dbutil.Database) error {
+	Table.Register(-1, 5, "Add ON UPDATE CASCADE to message foreign keys", func(tx *sql.Tx, db *dbutil.Database) error {
 		_, err := tx.Exec("PRAGMA defer_foreign_keys = ON")
 		if err != nil {
 			return fmt.Errorf("failed to enable defer_foreign_keys pragma: %w", err)

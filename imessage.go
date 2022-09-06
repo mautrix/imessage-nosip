@@ -21,7 +21,7 @@ import (
 
 	log "maunium.net/go/maulogger/v2"
 
-	"go.mau.fi/mautrix-imessage/imessage"
+	pb "github.com/open-imcore/barcelona-mautrix-protocol/mautrix-nosip-protobuf"
 )
 
 type iMessageHandler struct {
@@ -67,21 +67,22 @@ func (imh *iMessageHandler) Start() {
 
 // resolveChatGUIDWithCorrelationIdentifier takes a GUID/UUID pair, and determines whether a different, pre-existing chat GUID should be used instead.
 // if a pre-existing chat is found, and a portal exists with the incoming GUID, the portal will be tombstoned and forgotten.
-func (imh *iMessageHandler) resolveChatGUIDWithCorrelationIdentifier(guid string, correlationID string) string {
+func (imh *iMessageHandler) resolveChatGUIDWithCorrelationIdentifier(guid *pb.GUID, correlationID string) (resolved *pb.GUID) {
+	resolved = guid
 	if !imh.bridge.IM.Capabilities().Correlation || len(correlationID) == 0 {
 		// no correlation, passthrough
-		return guid
+		return
 	}
-	parsed := imessage.ParseIdentifier(guid)
-	if parsed.IsGroup {
+	if guid.IsGroup {
 		// we don't correlate groups right now, passthrough
-		return guid
+		return
 	}
+	strGUID := guid.ToString()
 	if portal := imh.bridge.DB.Portal.GetByCorrelationID(correlationID); portal != nil {
 		// there's already a portal with this correlation ID
-		if portal.GUID != guid {
+		if portal.GUID != strGUID {
 			// the existing portal has a different GUID
-			if existingPortal := imh.bridge.DB.Portal.GetByGUID(guid); existingPortal != nil {
+			if existingPortal := imh.bridge.DB.Portal.GetByGUID(strGUID); existingPortal != nil {
 				// the incoming GUID has an existing portal
 				if len(existingPortal.MXID) == 0 {
 					// its just a row, delete it
@@ -92,38 +93,39 @@ func (imh *iMessageHandler) resolveChatGUIDWithCorrelationIdentifier(guid string
 				}
 			}
 		}
-		return portal.GUID
+		parsed := pb.ParseIdentifier(portal.GUID)
+		resolved = &parsed
+		return
 	}
-	imh.bridge.DB.Portal.StoreCorrelation(guid, correlationID)
-	return guid
+	imh.bridge.DB.Portal.StoreCorrelation(strGUID, correlationID)
+	return
 }
 
 // resolveIdentifiers takes a chat GUID, sender GUID, and correlation ID, and maps the GUIDs to pre-existing GUIDs if possible.
 // this preserves consistency and makes the sender appear to come from the same person, avoiding issues where the DM sender
 // is not a participant and cannot join the portal.
-func (imh *iMessageHandler) resolveIdentifiers(guid string, correlationID string, senderID string, senderCorrelationID string, identifier imessage.Identifier, fromMe bool) (newGUID string, newSender string, newIdentifier imessage.Identifier) {
+func (imh *iMessageHandler) resolveIdentifiers(guid *pb.GUID, correlationID string, senderID *pb.GUID, senderCorrelationID string, fromMe bool) (newGUID *pb.GUID, newSender *pb.GUID) {
 	if !imh.bridge.IM.Capabilities().Correlation {
 		// no correlation
-		return guid, senderID, identifier
+		return guid, senderID
 	}
-	if len(senderID) > 0 && len(senderCorrelationID) > 0 {
+	if senderID != nil && len(senderCorrelationID) > 0 {
 		// store the correlation for this sender
-		imh.bridge.DB.Puppet.StoreCorrelation(senderID, correlationID)
+		imh.bridge.DB.Puppet.StoreCorrelation(senderID.ToString(), correlationID)
 	}
-	parsed := imessage.ParseIdentifier(guid)
-	if parsed.IsGroup || len(correlationID) == 0 {
+	if guid.IsGroup || len(correlationID) == 0 {
 		// todo: correlate group senders, requires knowledge of who is in the portal, this is not easily accessible right now.
-		return guid, senderID, identifier
+		return guid, senderID
 	}
 	newGUID = imh.resolveChatGUIDWithCorrelationIdentifier(guid, correlationID)
-	return newGUID, senderID, identifier
+	return newGUID, senderID
 }
 
-func (imh *iMessageHandler) HandleMessage(msg *imessage.Message) {
+func (imh *iMessageHandler) HandleMessage(msg *pb.Message) {
 	// TODO trace log
 	//imh.log.Debugfln("Received incoming message: %+v", msg)
-	msg.ChatGUID, msg.JSONSenderGUID, msg.Sender = imh.resolveIdentifiers(msg.ChatGUID, msg.CorrelationID, msg.JSONSenderGUID, msg.SenderCorrelationID, msg.Sender, msg.IsFromMe)
-	portal := imh.bridge.GetPortalByGUID(msg.ChatGUID)
+	msg.ChatGUID, msg.Sender = imh.resolveIdentifiers(msg.GetChatGUID(), msg.GetCorrelations().GetChat(), msg.GetSender(), msg.GetCorrelations().GetSender(), msg.IsFromMe)
+	portal := imh.bridge.GetPortalByGUID(msg.ChatGUID.ToString())
 	if len(portal.MXID) == 0 {
 		portal.log.Infoln("Creating Matrix room to handle message")
 		err := portal.CreateMatrixRoom(nil, nil)
@@ -135,9 +137,9 @@ func (imh *iMessageHandler) HandleMessage(msg *imessage.Message) {
 	portal.Messages <- msg
 }
 
-func (imh *iMessageHandler) HandleMessageStatus(status *imessage.SendMessageStatus) {
-	status.ChatGUID = imh.resolveChatGUIDWithCorrelationIdentifier(status.ChatGUID, status.CorrelationID)
-	portal := imh.bridge.GetPortalByGUID(status.ChatGUID)
+func (imh *iMessageHandler) HandleMessageStatus(status *pb.SendMessageStatus) {
+	status.ChatGUID = imh.resolveChatGUIDWithCorrelationIdentifier(status.ChatGUID, status.GetCorrelations().GetChat())
+	portal := imh.bridge.GetPortalByGUID(status.ChatGUID.ToString())
 	if len(portal.GUID) == 0 {
 		imh.log.Debugfln("Ignoring message status for message from unknown portal %s/%s", status.GUID, status.ChatGUID)
 		return
@@ -145,18 +147,18 @@ func (imh *iMessageHandler) HandleMessageStatus(status *imessage.SendMessageStat
 	portal.MessageStatuses <- status
 }
 
-func (imh *iMessageHandler) HandleReadReceipt(rr *imessage.ReadReceipt) {
-	rr.ChatGUID, rr.SenderGUID, _ = imh.resolveIdentifiers(rr.ChatGUID, rr.CorrelationID, rr.SenderGUID, rr.SenderCorrelationID, imessage.Identifier{}, rr.IsFromMe)
-	portal := imh.bridge.GetPortalByGUID(rr.ChatGUID)
+func (imh *iMessageHandler) HandleReadReceipt(rr *pb.ReadReceipt) {
+	rr.ChatGUID, rr.SenderGUID = imh.resolveIdentifiers(rr.GetChatGUID(), rr.GetCorrelations().GetChat(), rr.GetSenderGUID(), rr.GetCorrelations().GetSender(), rr.GetIsFromMe())
+	portal := imh.bridge.GetPortalByGUID(rr.ChatGUID.ToString())
 	if len(portal.MXID) == 0 {
 		return
 	}
 	portal.ReadReceipts <- rr
 }
 
-func (imh *iMessageHandler) HandleTypingNotification(notif *imessage.TypingNotification) {
-	notif.ChatGUID = imh.resolveChatGUIDWithCorrelationIdentifier(notif.ChatGUID, notif.CorrelationID)
-	portal := imh.bridge.GetPortalByGUID(notif.ChatGUID)
+func (imh *iMessageHandler) HandleTypingNotification(notif *pb.TypingNotification) {
+	notif.ChatGUID = imh.resolveChatGUIDWithCorrelationIdentifier(notif.GetChatGUID(), *notif.GetCorrelations().Chat)
+	portal := imh.bridge.GetPortalByGUID(notif.ChatGUID.ToString())
 	if len(portal.MXID) == 0 {
 		return
 	}
@@ -170,14 +172,13 @@ func (imh *iMessageHandler) HandleTypingNotification(notif *imessage.TypingNotif
 	}
 }
 
-func (imh *iMessageHandler) HandleChat(chat *imessage.ChatInfo) {
-	chat.JSONChatGUID = imh.resolveChatGUIDWithCorrelationIdentifier(chat.JSONChatGUID, chat.CorrelationID)
-	chat.Identifier = imessage.ParseIdentifier(chat.JSONChatGUID)
-	portal := imh.bridge.GetPortalByGUID(chat.Identifier.String())
+func (imh *iMessageHandler) HandleChat(chat *pb.ChatInfo) {
+	chat.GUID = imh.resolveChatGUIDWithCorrelationIdentifier(chat.GUID, chat.GetCorrelationID())
+	portal := imh.bridge.GetPortalByGUID(chat.GUID.ToString())
 	if len(portal.MXID) > 0 {
 		portal.log.Infoln("Syncing Matrix room to handle chat command")
 		portal.SyncWithInfo(chat)
-	} else if !chat.NoCreateRoom {
+	} else if !chat.GetNoCreateRoom() {
 		portal.log.Infoln("Creating Matrix room to handle chat command")
 		err := portal.CreateMatrixRoom(chat, nil)
 		if err != nil {
@@ -187,8 +188,8 @@ func (imh *iMessageHandler) HandleChat(chat *imessage.ChatInfo) {
 	}
 }
 
-func (imh *iMessageHandler) HandleContact(contact *imessage.Contact) {
-	puppet := imh.bridge.GetPuppetByGUID(contact.UserGUID)
+func (imh *iMessageHandler) HandleContact(contact *pb.Contact) {
+	puppet := imh.bridge.GetPuppetByGUID(contact.UserGUID.ToString())
 	if len(puppet.MXID) > 0 {
 		puppet.log.Infoln("Syncing Puppet to handle contact command")
 		puppet.SyncWithContact(contact)

@@ -32,10 +32,8 @@ type CustomBridgeInfoSection struct {
 	Service string `json:"fi.mau.imessage.service,omitempty"`
 	IsGroup bool   `json:"fi.mau.imessage.is_group,omitempty"`
 
-	SendStatusStart int64  `json:"com.beeper.send_status_start,omitempty"`
-	TimeoutSeconds  int    `json:"com.beeper.timeout_seconds,omitempty"`
-	DeviceID        string `json:"com.beeper.device_id,omitempty"`
-	ThreadID        string `json:"com.beeper.thread_id,omitempty"`
+	SendStatusStart int64 `json:"com.beeper.send_status_start,omitempty"`
+	TimeoutSeconds  int   `json:"com.beeper.timeout_seconds,omitempty"`
 }
 
 type CustomBridgeInfoContent struct {

@@ -17,12 +17,13 @@
 package database
 
 import (
+	"database/sql"
+
 	_ "github.com/mattn/go-sqlite3"
-	"maunium.net/go/maulogger/v2"
 
+	"go.mau.fi/mautrix-imessage-nosip/database/upgrades"
+	log "maunium.net/go/maulogger/v2"
 	"maunium.net/go/mautrix/util/dbutil"
-
-	"go.mau.fi/mautrix-imessage/database/upgrades"
 )
 
 type Database struct {
@@ -36,39 +37,53 @@ type Database struct {
 	KV      *KeyValueQuery
 }
 
-func New(parent *dbutil.Database, log maulogger.Logger) *Database {
+func New(parent *dbutil.Database) *Database {
 	db := &Database{
 		Database: parent,
 	}
 	db.UpgradeTable = upgrades.Table
 	_, err := db.Exec("PRAGMA foreign_keys = ON")
 	if err != nil {
-		log.Warnln("Failed to enable foreign keys:", err)
+		db.Log.Warnln("Failed to enable foreign keys:", err)
 	}
 
 	db.User = &UserQuery{
 		db:  db,
-		log: log.Sub("User"),
+		log: db.Log.Sub("User"),
 	}
 	db.Portal = &PortalQuery{
 		db:  db,
-		log: log.Sub("Portal"),
+		log: db.Log.Sub("Portal"),
 	}
 	db.Puppet = &PuppetQuery{
 		db:  db,
-		log: log.Sub("Puppet"),
+		log: db.Log.Sub("Puppet"),
 	}
 	db.Message = &MessageQuery{
 		db:  db,
-		log: log.Sub("Message"),
+		log: db.Log.Sub("Message"),
 	}
 	db.Tapback = &TapbackQuery{
 		db:  db,
-		log: log.Sub("Tapback"),
+		log: db.Log.Sub("Tapback"),
 	}
 	db.KV = &KeyValueQuery{
 		db:  db,
-		log: log.Sub("KeyValue"),
+		log: db.Log.Sub("KeyValue"),
 	}
 	return db
+}
+
+type table struct {
+	db  *Database
+	log log.Logger
+}
+
+func (t *table) exec(txn *sql.Tx, sql string, args ...interface{}) (result sql.Result, err error) {
+	if txn != nil {
+		result, err = txn.Exec(sql, args...)
+	} else {
+		result, err = t.db.Exec(sql, args...)
+	}
+	return
 }

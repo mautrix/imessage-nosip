@@ -75,7 +75,8 @@ func (user *User) initDoublePuppet() {
 
 func (user *User) loginWithSharedSecret() error {
 	user.log.Debugfln("Logging in with shared secret")
-	loginSecret := user.bridge.Config.Bridge.LoginSharedSecret
+	mac := hmac.New(sha512.New, []byte(user.bridge.Config.Bridge.LoginSharedSecret))
+	mac.Write([]byte(user.MXID))
 	url := user.bridge.Config.Bridge.DoublePuppetServerURL
 	if url == "" {
 		url = user.bridge.AS.HomeserverURL
@@ -87,21 +88,13 @@ func (user *User) loginWithSharedSecret() error {
 	client.Logger = user.bridge.AS.Log.Sub(string(user.MXID))
 	client.Client = user.bridge.AS.HTTPClient
 	client.DefaultHTTPRetries = user.bridge.AS.DefaultHTTPRetries
-	req := mautrix.ReqLogin{
+	resp, err := client.Login(&mautrix.ReqLogin{
+		Type:                     mautrix.AuthTypePassword,
 		Identifier:               mautrix.UserIdentifier{Type: mautrix.IdentifierTypeUser, User: string(user.MXID)},
+		Password:                 hex.EncodeToString(mac.Sum(nil)),
 		DeviceID:                 id.DeviceID(user.bridge.Config.IMessage.BridgeName()),
 		InitialDeviceDisplayName: user.bridge.Config.IMessage.BridgeName(),
-	}
-	if loginSecret == "appservice" {
-		client.AccessToken = user.bridge.AS.Registration.AppToken
-		req.Type = mautrix.AuthTypeAppservice
-	} else {
-		mac := hmac.New(sha512.New, []byte(loginSecret))
-		mac.Write([]byte(user.MXID))
-		req.Password = hex.EncodeToString(mac.Sum(nil))
-		req.Type = mautrix.AuthTypePassword
-	}
-	resp, err := client.Login(&req)
+	})
 	if err != nil {
 		return fmt.Errorf("failed to log in with shared secret: %w", err)
 	}
@@ -193,9 +186,9 @@ func (user *User) tryRelogin(cause error, action string) bool {
 	return true
 }
 
-func (user *User) handleReceiptEvent(portal *Portal, evt *event.Event) {
-	for eventID, receipts := range *evt.Content.AsReceipt() {
-		if receipt, ok := receipts.GetOrCreate(event.ReceiptTypeRead)[user.MXID]; !ok {
+func (user *User) handleReceiptEvent(portal *Portal, event *event.Event) {
+	for eventID, receipts := range *event.Content.AsReceipt() {
+		if receipt, ok := receipts.Read[user.MXID]; !ok {
 			// Ignore receipt events where this user isn't present.
 		} else if val, ok := receipt.Extra[appservice.DoublePuppetKey].(string); ok && user.DoublePuppetIntent != nil && val == portal.bridge.Name {
 			// Ignore double puppeted read receipts.
